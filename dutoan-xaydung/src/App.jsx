@@ -1,759 +1,674 @@
 import { useState, useRef, useCallback } from "react";
 
-// ============ CONSTANTS theo TT11/12/13-2021/TT-BXD ============
-const DEFAULT_COEFFICIENTS = {
-  hsvl: 1,       // Hệ số vật liệu
-  hsnc: 1,       // Hệ số nhân công
-  hsmtc: 1,      // Hệ số máy thi công
-  hscpc: 6.2,    // Chi phí chung (%)
-  hstncttt: 6,   // Thu nhập chịu thuế tính trước (%)
-  hsvat: 8,      // Thuế GTGT (%)
-  hsnt: 1.1,     // Chi phí nhà tạm (%)
-  hsttpk: 0,     // Trực tiếp phí khác (%)
+const FORMULA_HELP = `Cấu trúc dự toán theo TT11/2021/TT-BXD:
+T = VL + NC + MTC (Chi phí trực tiếp)
+C = T × %ChiPhíChung
+LT = T × %NhàTạm  
+TT = T × %KhácKhôngXĐ
+GT = C + LT + TT
+Z = T + GT
+TL = Z × %TNCTTТ
+G = Z + TL
+GTGT = G × %VAT
+GXDST = G + GTGT`;
+
+const DEFAULT_CONFIG = {
+  tenDuAn: "TÊN DỰ ÁN",
+  tenCongTrinh: "TÊN CÔNG TRÌNH",
+  tenHangMuc: "TÊN HẠNG MỤC",
+  diaDiem: "TP. Hồ Chí Minh",
+  loaiCongTrinh: "3",
+  capCongTrinh: "3",
+  vatRate: 8,
+  chiPhiChung: 6.187,
+  nhaTam: 1.1,
+  khacKhongXD: 2.0,
+  tnctt: 6.0,
+  hsVL: 1,
+  hsNC: 1,
+  hsMTC: 1,
+  vung: "1",
+  nam: "2024",
 };
 
-const CONG_TRINH_TYPES = [
-  { id: 1, name: "Công trình dân dụng (cấp I, II)", hscpc: 7.3 },
-  { id: 2, name: "Công trình dân dụng (cấp III, IV)", hscpc: 11.6 },
-  { id: 3, name: "Công trình công nghiệp (cấp I, II)", hscpc: 6.2 },
-  { id: 4, name: "Công trình công nghiệp (cấp III, IV)", hscpc: 7.3 },
-  { id: 5, name: "Công trình giao thông (cấp I, II)", hscpc: 6.2 },
-  { id: 6, name: "Công trình giao thông (cấp III, IV)", hscpc: 7.3 },
-  { id: 7, name: "Công trình nông nghiệp (cấp I, II)", hscpc: 6.1 },
-];
-
-// ============ UTILITIES ============
-const fmt = (n) => {
-  if (!n || isNaN(n)) return "0";
-  return Math.round(n).toLocaleString("vi-VN");
+const LOAI_CT = {
+  "1": "Công trình dân dụng",
+  "2": "Công trình công nghiệp",
+  "3": "Công trình giao thông",
+  "4": "Công trình nông nghiệp và PTNT",
+  "5": "Công trình hạ tầng kỹ thuật",
 };
 
-const fmtPct = (n) => (n || 0).toFixed(2) + "%";
+// ─── Utilities ──────────────────────────────────────────────────────────────
+const fmt = (n, d = 0) =>
+  n == null || isNaN(n)
+    ? "0"
+    : Number(n).toLocaleString("vi-VN", {
+        minimumFractionDigits: d,
+        maximumFractionDigits: d,
+      });
 
-const genId = () => Math.random().toString(36).slice(2, 9);
+const uid = () => Math.random().toString(36).slice(2, 9);
 
-// ============ COMPONENTS ============
-
-function TabBar({ tabs, active, onSelect }) {
-  return (
-    <div style={{ display: "flex", borderBottom: "2px solid #1a365d", background: "#f7fafc", overflowX: "auto" }}>
-      {tabs.map((t) => (
-        <button
-          key={t.id}
-          onClick={() => onSelect(t.id)}
-          style={{
-            padding: "10px 18px",
-            border: "none",
-            borderBottom: active === t.id ? "3px solid #2b6cb0" : "3px solid transparent",
-            background: active === t.id ? "#fff" : "transparent",
-            color: active === t.id ? "#2b6cb0" : "#4a5568",
-            fontWeight: active === t.id ? 700 : 400,
-            cursor: "pointer",
-            whiteSpace: "nowrap",
-            fontSize: 13,
-            transition: "all 0.15s",
-          }}
-        >
-          {t.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function InfoPanel({ project, onChange }) {
-  const field = (label, key, type = "text") => (
-    <div style={{ marginBottom: 12 }}>
-      <label style={{ display: "block", fontSize: 12, color: "#4a5568", marginBottom: 4, fontWeight: 600 }}>
-        {label}
-      </label>
-      <input
-        type={type}
-        value={project[key] || ""}
-        onChange={(e) => onChange({ ...project, [key]: e.target.value })}
-        style={{
-          width: "100%", padding: "7px 10px", border: "1px solid #cbd5e0",
-          borderRadius: 6, fontSize: 13, background: "#fff", boxSizing: "border-box",
-        }}
-      />
-    </div>
-  );
-  return (
-    <div style={{ padding: 20, maxWidth: 700 }}>
-      <h3 style={{ color: "#1a365d", marginTop: 0, marginBottom: 20, fontSize: 16 }}>📋 Thông Tin Công Trình</h3>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 20px" }}>
-        {field("Tên dự án", "tenDuAn")}
-        {field("Tên công trình", "tenCongTrinh")}
-        {field("Hạng mục", "hangMuc")}
-        {field("Địa điểm xây dựng", "diaDiem")}
-        {field("Chủ đầu tư", "chuDauTu")}
-        {field("Đơn vị lập dự toán", "donViLap")}
-      </div>
-      <div style={{ marginTop: 10, padding: "10px 14px", background: "#ebf8ff", borderRadius: 8, fontSize: 12, color: "#2b6cb0" }}>
-        📌 Theo TT11/2021/TT-BXD, TT12/2021/TT-BXD, TT13/2021/TT-BXD
-      </div>
-    </div>
-  );
-}
-
-function CoefficientPanel({ coef, onChange }) {
-  const row = (label, key, suffix = "%") => (
-    <tr key={key}>
-      <td style={{ padding: "7px 12px", color: "#2d3748", fontSize: 13 }}>{label}</td>
-      <td style={{ padding: "7px 12px" }}>
-        <input
-          type="number"
-          value={coef[key]}
-          step="0.1"
-          onChange={(e) => onChange({ ...coef, [key]: parseFloat(e.target.value) || 0 })}
-          style={{ width: 90, padding: "4px 8px", border: "1px solid #cbd5e0", borderRadius: 5, fontSize: 13, textAlign: "right" }}
-        />
-        {suffix && <span style={{ marginLeft: 6, color: "#718096", fontSize: 12 }}>{suffix}</span>}
-      </td>
-    </tr>
-  );
-  return (
-    <div style={{ padding: 20, maxWidth: 600 }}>
-      <h3 style={{ color: "#1a365d", marginTop: 0, marginBottom: 20, fontSize: 16 }}>⚙️ Hệ Số Áp Dụng</h3>
-      <table style={{ borderCollapse: "collapse", width: "100%" }}>
-        <thead>
-          <tr style={{ background: "#ebf4ff" }}>
-            <th style={{ padding: "8px 12px", textAlign: "left", fontSize: 12, color: "#2b6cb0", fontWeight: 700 }}>Hệ số</th>
-            <th style={{ padding: "8px 12px", textAlign: "left", fontSize: 12, color: "#2b6cb0", fontWeight: 700 }}>Giá trị</th>
-          </tr>
-        </thead>
-        <tbody>
-          {row("Hệ số vật liệu (K_VL)", "hsvl", "")}
-          {row("Hệ số nhân công (K_NC)", "hsnc", "")}
-          {row("Hệ số máy thi công (K_MTC)", "hsmtc", "")}
-          {row("Chi phí chung (%)", "hscpc")}
-          {row("Thu nhập chịu thuế tính trước (%)", "hstncttt")}
-          {row("Thuế GTGT (%)", "hsvat")}
-          {row("Chi phí nhà tạm (%)", "hsnt")}
-          {row("Trực tiếp phí khác (%)", "hsttpk")}
-        </tbody>
-      </table>
-      <div style={{ marginTop: 16 }}>
-        <label style={{ fontSize: 12, fontWeight: 600, color: "#4a5568", display: "block", marginBottom: 8 }}>
-          Loại công trình (tự động điền chi phí chung):
-        </label>
-        <select
-          onChange={(e) => {
-            const t = CONG_TRINH_TYPES.find((x) => x.id === parseInt(e.target.value));
-            if (t) onChange({ ...coef, hscpc: t.hscpc });
-          }}
-          style={{ width: "100%", padding: "7px 10px", border: "1px solid #cbd5e0", borderRadius: 6, fontSize: 13 }}
-        >
-          <option value="">-- Chọn loại công trình --</option>
-          {CONG_TRINH_TYPES.map((t) => (
-            <option key={t.id} value={t.id}>{t.name} ({t.hscpc}%)</option>
-          ))}
-        </select>
-      </div>
-    </div>
-  );
-}
-
-function DuToanTable({ items, onAdd, onUpdate, onDelete, coef }) {
-  const cols = [
-    { key: "stt", label: "STT", w: 40 },
-    { key: "mhDg", label: "Mã hiệu ĐG", w: 110 },
-    { key: "noiDung", label: "Nội dung công việc", w: 240 },
-    { key: "dvt", label: "ĐVT", w: 60 },
-    { key: "kl", label: "Khối lượng", w: 90 },
-    { key: "dgVl", label: "ĐG Vật liệu", w: 100 },
-    { key: "dgNc", label: "ĐG Nhân công", w: 100 },
-    { key: "dgMtc", label: "ĐG Máy TC", w: 100 },
-    { key: "ttVl", label: "TT Vật liệu", w: 110 },
-    { key: "ttNc", label: "TT Nhân công", w: 110 },
-    { key: "ttMtc", label: "TT Máy TC", w: 110 },
-  ];
-
-  const calcTT = (item) => ({
-    ttVl: (item.kl || 0) * (item.dgVl || 0),
-    ttNc: (item.kl || 0) * (item.dgNc || 0),
-    ttMtc: (item.kl || 0) * (item.dgMtc || 0),
+function calcTotals(items, cfg) {
+  let sumVL = 0, sumNC = 0, sumMTC = 0;
+  items.forEach((it) => {
+    if (it.type === "item") {
+      sumVL += (it.vl || 0) * (it.kl || 0) * cfg.hsVL;
+      sumNC += (it.nc || 0) * (it.kl || 0) * cfg.hsNC;
+      sumMTC += (it.mtc || 0) * (it.kl || 0) * cfg.hsMTC;
+    }
   });
-
-  return (
-    <div style={{ padding: 16 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <h3 style={{ color: "#1a365d", margin: 0, fontSize: 16 }}>📊 Bảng Dự Toán</h3>
-        <button
-          onClick={onAdd}
-          style={{
-            padding: "7px 16px", background: "#2b6cb0", color: "#fff",
-            border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600,
-          }}
-        >
-          + Thêm công việc
-        </button>
-      </div>
-      <div style={{ overflowX: "auto" }}>
-        <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: 1000 }}>
-          <thead>
-            <tr style={{ background: "#2b6cb0", color: "#fff" }}>
-              {cols.map((c) => (
-                <th key={c.key} style={{ padding: "8px 6px", textAlign: c.key === "stt" ? "center" : "left", whiteSpace: "nowrap", minWidth: c.w }}>
-                  {c.label}
-                </th>
-              ))}
-              <th style={{ padding: "8px 6px", width: 40 }}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.length === 0 && (
-              <tr>
-                <td colSpan={cols.length + 1} style={{ textAlign: "center", padding: 32, color: "#a0aec0" }}>
-                  Chưa có công việc nào. Nhấn "+ Thêm công việc" để bắt đầu.
-                </td>
-              </tr>
-            )}
-            {items.map((item, idx) => {
-              const tt = calcTT(item);
-              const isGroup = item.isGroup;
-              return (
-                <tr
-                  key={item.id}
-                  style={{ background: isGroup ? "#ebf8ff" : idx % 2 === 0 ? "#fff" : "#f7fafc" }}
-                >
-                  <td style={{ padding: "5px 6px", textAlign: "center", color: "#718096" }}>{idx + 1}</td>
-                  {["mhDg", "noiDung", "dvt"].map((k) => (
-                    <td key={k} style={{ padding: "3px 4px" }}>
-                      <input
-                        value={item[k] || ""}
-                        onChange={(e) => onUpdate(item.id, { [k]: e.target.value })}
-                        style={{
-                          width: "100%", border: "none", background: "transparent",
-                          fontSize: 12, padding: "2px 4px", fontWeight: isGroup ? 700 : 400,
-                        }}
-                        placeholder={k === "noiDung" ? "Nhập nội dung..." : ""}
-                      />
-                    </td>
-                  ))}
-                  {["kl", "dgVl", "dgNc", "dgMtc"].map((k) => (
-                    <td key={k} style={{ padding: "3px 4px" }}>
-                      {!isGroup && (
-                        <input
-                          type="number"
-                          value={item[k] || ""}
-                          onChange={(e) => onUpdate(item.id, { [k]: parseFloat(e.target.value) || 0 })}
-                          style={{
-                            width: "100%", border: "none", background: "transparent",
-                            fontSize: 12, padding: "2px 4px", textAlign: "right",
-                          }}
-                        />
-                      )}
-                    </td>
-                  ))}
-                  <td style={{ padding: "5px 6px", textAlign: "right", color: "#2d3748" }}>
-                    {!isGroup ? fmt(tt.ttVl) : ""}
-                  </td>
-                  <td style={{ padding: "5px 6px", textAlign: "right", color: "#2d3748" }}>
-                    {!isGroup ? fmt(tt.ttNc) : ""}
-                  </td>
-                  <td style={{ padding: "5px 6px", textAlign: "right", color: "#2d3748" }}>
-                    {!isGroup ? fmt(tt.ttMtc) : ""}
-                  </td>
-                  <td style={{ padding: "3px 4px", textAlign: "center" }}>
-                    <button
-                      onClick={() => onDelete(item.id)}
-                      style={{ background: "none", border: "none", cursor: "pointer", color: "#fc8181", fontSize: 14 }}
-                      title="Xóa"
-                    >✕</button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <div style={{ marginTop: 12, textAlign: "right", fontSize: 12, color: "#718096" }}>
-        <button
-          onClick={() => onAdd(true)}
-          style={{
-            padding: "5px 12px", background: "#f7fafc", border: "1px solid #cbd5e0",
-            borderRadius: 5, cursor: "pointer", fontSize: 12, color: "#4a5568",
-          }}
-        >
-          + Thêm nhóm/hạng mục
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function THKP({ items, coef, project }) {
-  const totals = items
-    .filter((i) => !i.isGroup)
-    .reduce(
-      (acc, item) => {
-        acc.vl += (item.kl || 0) * (item.dgVl || 0);
-        acc.nc += (item.kl || 0) * (item.dgNc || 0);
-        acc.mtc += (item.kl || 0) * (item.dgMtc || 0);
-        return acc;
-      },
-      { vl: 0, nc: 0, mtc: 0 }
-    );
-
-  const VL = totals.vl * coef.hsvl;
-  const NC = totals.nc * coef.hsnc;
-  const MTC = totals.mtc * coef.hsmtc;
-  const TT_K = coef.hsttpk / 100;
-  const TT = (VL + NC + MTC) * TT_K;
-  const T = VL + NC + MTC + TT;
-  const C = T * (coef.hscpc / 100);
-  const LT = T * (coef.hsnt / 100);
-  const GT = C + LT;
+  const T = sumVL + sumNC + sumMTC;
+  const C = T * (cfg.chiPhiChung / 100);
+  const LT = T * (cfg.nhaTam / 100);
+  const TT_kphi = T * (cfg.khacKhongXD / 100);
+  const GT = C + LT + TT_kphi;
   const Z = T + GT;
-  const TL = Z * (coef.hstncttt / 100);
+  const TL = Z * (cfg.tnctt / 100);
   const G = Z + TL;
-  const GTGT = G * (coef.hsvat / 100);
+  const GTGT = G * (cfg.vatRate / 100);
   const GXDST = G + GTGT;
-
-  const rows = [
-    { label: "Chi phí Vật liệu", key: "VL", val: VL, ky: "VL", bold: false },
-    { label: "Chi phí Nhân công", key: "NC", val: NC, ky: "NC", bold: false },
-    { label: "Chi phí Máy thi công", key: "MTC", val: MTC, ky: "MTC", bold: false },
-    { label: "Trực tiếp phí khác", key: "TT", val: TT, ky: "TT", sub: true },
-    { label: "I. CHI PHÍ TRỰC TIẾP", key: "T", val: T, ky: "T", bold: true, bg: "#e6fffa" },
-    { label: "Chi phí chung", key: "C", val: C, ky: "C", sub: true },
-    { label: "Chi phí nhà tạm", key: "LT", val: LT, ky: "LT", sub: true },
-    { label: "II. CHI PHÍ GIÁN TIẾP", key: "GT", val: GT, ky: "GT", bold: true, bg: "#e6fffa" },
-    { label: "Giá thành dự toán xây dựng", key: "Z", val: Z, ky: "Z", bold: true },
-    { label: "III. THU NHẬP CHỊU THUẾ TÍNH TRƯỚC", key: "TL", val: TL, ky: "TL", bold: true, bg: "#e6fffa" },
-    { label: "Chi phí xây dựng trước thuế", key: "G", val: G, ky: "G", bold: true },
-    { label: "IV. THUẾ GIÁ TRỊ GIA TĂNG", key: "GTGT", val: GTGT, ky: "GTGT", bold: true, bg: "#e6fffa" },
-    { label: "CHI PHÍ XÂY DỰNG SAU THUẾ", key: "GXDST", val: GXDST, ky: "GXDST", bold: true, bg: "#bee3f8", fontSize: 14 },
-  ];
-
-  return (
-    <div style={{ padding: 20 }}>
-      <h3 style={{ color: "#1a365d", marginTop: 0, marginBottom: 4, fontSize: 16 }}>💰 Tổng Hợp Kinh Phí (THKP)</h3>
-      <div style={{ fontSize: 12, color: "#718096", marginBottom: 16 }}>
-        {project.tenCongTrinh || "---"} | {project.hangMuc || "---"}
-      </div>
-      <table style={{ borderCollapse: "collapse", width: "100%", maxWidth: 700 }}>
-        <thead>
-          <tr style={{ background: "#2b6cb0", color: "#fff" }}>
-            <th style={{ padding: "8px 12px", textAlign: "left", fontSize: 12 }}>STT</th>
-            <th style={{ padding: "8px 12px", textAlign: "left", fontSize: 12 }}>Khoản mục chi phí</th>
-            <th style={{ padding: "8px 12px", textAlign: "center", fontSize: 12 }}>KH</th>
-            <th style={{ padding: "8px 12px", textAlign: "left", fontSize: 12 }}>Cách tính</th>
-            <th style={{ padding: "8px 12px", textAlign: "right", fontSize: 12 }}>Thành tiền (đồng)</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r, i) => (
-            <tr key={r.key} style={{ background: r.bg || (i % 2 === 0 ? "#fff" : "#f7fafc") }}>
-              <td style={{ padding: "7px 12px", fontSize: 12, color: "#718096" }}>
-                {["T", "GT", "TL", "GTGT"].includes(r.key) ? ["I", "II", "III", "IV"][["T", "GT", "TL", "GTGT"].indexOf(r.key)] : ""}
-              </td>
-              <td style={{ padding: "7px 12px", fontSize: r.fontSize || 12, fontWeight: r.bold ? 700 : 400, paddingLeft: r.sub ? 28 : 12 }}>
-                {r.label}
-              </td>
-              <td style={{ padding: "7px 12px", fontSize: 12, color: "#4a5568", textAlign: "center" }}>{r.ky}</td>
-              <td style={{ padding: "7px 12px", fontSize: 11, color: "#718096" }}>
-                {r.key === "VL" && `A1 × ${coef.hsvl}`}
-                {r.key === "NC" && `B1 × ${coef.hsnc}`}
-                {r.key === "MTC" && `C1 × ${coef.hsmtc}`}
-                {r.key === "TT" && `T × ${coef.hsttpk}%`}
-                {r.key === "T" && "VL + NC + MTC + TT"}
-                {r.key === "C" && `T × ${coef.hscpc}%`}
-                {r.key === "LT" && `T × ${coef.hsnt}%`}
-                {r.key === "GT" && "C + LT"}
-                {r.key === "Z" && "T + GT"}
-                {r.key === "TL" && `Z × ${coef.hstncttt}%`}
-                {r.key === "G" && "Z + TL"}
-                {r.key === "GTGT" && `G × ${coef.hsvat}%`}
-                {r.key === "GXDST" && "G + GTGT"}
-              </td>
-              <td style={{ padding: "7px 12px", fontSize: r.fontSize || 12, fontWeight: r.bold ? 700 : 400, textAlign: "right", color: r.key === "GXDST" ? "#2b6cb0" : "#2d3748" }}>
-                {fmt(r.val)}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      <div style={{ marginTop: 24, padding: "14px 18px", background: "#ebf8ff", borderRadius: 10, border: "1px solid #bee3f8" }}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: "#2b6cb0" }}>
-          TỔNG CỘNG (GXD SAU THUẾ): {fmt(GXDST)} đồng
-        </div>
-        <div style={{ fontSize: 12, color: "#4a5568", marginTop: 4 }}>
-          Trong đó: VL = {fmt(VL)} | NC = {fmt(NC)} | MTC = {fmt(MTC)}
-        </div>
-      </div>
-
-      <div style={{ marginTop: 20, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
-        {[
-          { label: "Chi phí VL / Tổng", val: G > 0 ? (VL / G * 100).toFixed(1) : 0, unit: "%" },
-          { label: "Chi phí NC / Tổng", val: G > 0 ? (NC / G * 100).toFixed(1) : 0, unit: "%" },
-          { label: "Chi phí MTC / Tổng", val: G > 0 ? (MTC / G * 100).toFixed(1) : 0, unit: "%" },
-        ].map((s) => (
-          <div key={s.label} style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, padding: "12px 16px", textAlign: "center" }}>
-            <div style={{ fontSize: 11, color: "#718096" }}>{s.label}</div>
-            <div style={{ fontSize: 22, fontWeight: 700, color: "#2b6cb0", marginTop: 4 }}>{s.val}{s.unit}</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+  return { sumVL, sumNC, sumMTC, T, C, LT, TT_kphi, GT, Z, TL, G, GTGT, GXDST };
 }
 
-function GiaTriVatTu({ items }) {
-  const vtMap = {};
-  items.filter(i => !i.isGroup).forEach((item) => {
-    const key = item.mhVt || item.mhDg;
-    if (!key) return;
-    if (!vtMap[key]) vtMap[key] = { ma: key, ten: item.tenVt || item.noiDung, dvt: item.dvt, kl: 0, dg: item.dgVl || 0 };
-    vtMap[key].kl += (item.kl || 0);
+// ─── Excel Export (pure JS, no library needed for basic xlsx) ────────────────
+function exportToXLSX(items, cfg) {
+  const tot = calcTotals(items, cfg);
+
+  // Build CSV-based export using SheetJS (loaded via CDN in HTML)
+  // We'll use a data URI approach with proper Excel XML format
+  const rows = [];
+
+  // Header
+  rows.push([
+    "STT", "ĐỊNH MỨC", "MÃ HIỆU ĐƠN GIÁ", "NỘI DUNG CÔNG VIỆC",
+    "ĐƠN VỊ", "KHỐI LƯỢNG",
+    "ĐG VẬT LIỆU", "ĐG NHÂN CÔNG", "ĐG MÁY TC",
+    "TT VẬT LIỆU", "TT NHÂN CÔNG", "TT MÁY TC",
+  ]);
+
+  let stt = 0;
+  items.forEach((it) => {
+    if (it.type === "section") {
+      rows.push(["", "", "", it.name, "", "", "", "", "", "", "", ""]);
+    } else {
+      stt++;
+      const kl = it.kl || 0;
+      rows.push([
+        stt, it.dmCode || "", it.dgCode || "", it.name || "",
+        it.dvt || "", kl,
+        it.vl || 0, it.nc || 0, it.mtc || 0,
+        (it.vl || 0) * kl * cfg.hsVL,
+        (it.nc || 0) * kl * cfg.hsNC,
+        (it.mtc || 0) * kl * cfg.hsMTC,
+      ]);
+    }
   });
-  const vtList = Object.values(vtMap).filter(v => v.kl > 0 && v.dg > 0);
 
-  return (
-    <div style={{ padding: 20 }}>
-      <h3 style={{ color: "#1a365d", marginTop: 0, marginBottom: 16, fontSize: 16 }}>🔩 Bảng Giá Trị Vật Tư</h3>
-      <table style={{ borderCollapse: "collapse", fontSize: 12, width: "100%" }}>
-        <thead>
-          <tr style={{ background: "#2b6cb0", color: "#fff" }}>
-            <th style={{ padding: "8px 10px" }}>STT</th>
-            <th style={{ padding: "8px 10px", textAlign: "left" }}>Mã vật tư</th>
-            <th style={{ padding: "8px 10px", textAlign: "left" }}>Tên vật tư</th>
-            <th style={{ padding: "8px 10px" }}>ĐVT</th>
-            <th style={{ padding: "8px 10px", textAlign: "right" }}>Khối lượng</th>
-            <th style={{ padding: "8px 10px", textAlign: "right" }}>Đơn giá</th>
-            <th style={{ padding: "8px 10px", textAlign: "right" }}>Thành tiền</th>
-          </tr>
-        </thead>
-        <tbody>
-          {vtList.length === 0 && (
-            <tr><td colSpan={7} style={{ textAlign: "center", padding: 24, color: "#a0aec0" }}>Chưa có dữ liệu vật tư</td></tr>
-          )}
-          {vtList.map((v, i) => (
-            <tr key={v.ma} style={{ background: i % 2 === 0 ? "#fff" : "#f7fafc" }}>
-              <td style={{ padding: "6px 10px", textAlign: "center" }}>{i + 1}</td>
-              <td style={{ padding: "6px 10px", color: "#4a5568" }}>{v.ma}</td>
-              <td style={{ padding: "6px 10px" }}>{v.ten}</td>
-              <td style={{ padding: "6px 10px", textAlign: "center" }}>{v.dvt}</td>
-              <td style={{ padding: "6px 10px", textAlign: "right" }}>{v.kl.toFixed(4)}</td>
-              <td style={{ padding: "6px 10px", textAlign: "right" }}>{fmt(v.dg)}</td>
-              <td style={{ padding: "6px 10px", textAlign: "right", fontWeight: 600 }}>{fmt(v.kl * v.dg)}</td>
-            </tr>
-          ))}
-          {vtList.length > 0 && (
-            <tr style={{ background: "#ebf8ff", fontWeight: 700 }}>
-              <td colSpan={6} style={{ padding: "8px 10px", textAlign: "right" }}>TỔNG CỘNG</td>
-              <td style={{ padding: "8px 10px", textAlign: "right" }}>{fmt(vtList.reduce((s, v) => s + v.kl * v.dg, 0))}</td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
+  // THKP rows
+  rows.push(["", "", "", "", "", "", "", "", "", "", "", ""]);
+  rows.push(["", "", "", "BẢNG TỔNG HỢP KINH PHÍ", "", "", "", "", "", "", "", ""]);
+  rows.push(["A1", "", "", "Chi phí Vật liệu", "", "", "", "", "", "", "", tot.sumVL]);
+  rows.push(["B1", "", "", "Chi phí Nhân công", "", "", "", "", "", "", "", tot.sumNC]);
+  rows.push(["C1", "", "", "Chi phí Máy thi công", "", "", "", "", "", "", "", tot.sumMTC]);
+  rows.push(["T", "", "", "CỘNG CHI PHÍ TRỰC TIẾP", "", "", "", "", "", "", "", tot.T]);
+  rows.push(["C", "", "", `Chi phí chung (${cfg.chiPhiChung}%)`, "", "", "", "", "", "", "", tot.C]);
+  rows.push(["LT", "", "", `Chi phí nhà tạm (${cfg.nhaTam}%)`, "", "", "", "", "", "", "", tot.LT]);
+  rows.push(["TT", "", "", `Chi phí khác không xác định (${cfg.khacKhongXD}%)`, "", "", "", "", "", "", "", tot.TT_kphi]);
+  rows.push(["GT", "", "", "CỘNG CHI PHÍ GIÁN TIẾP", "", "", "", "", "", "", "", tot.GT]);
+  rows.push(["Z", "", "", "GIÁ THÀNH DỰ TOÁN XÂY DỰNG", "", "", "", "", "", "", "", tot.Z]);
+  rows.push(["TL", "", "", `Thu nhập chịu thuế tính trước (${cfg.tnctt}%)`, "", "", "", "", "", "", "", tot.TL]);
+  rows.push(["G", "", "", "CHI PHÍ XÂY DỰNG TRƯỚC THUẾ", "", "", "", "", "", "", "", tot.G]);
+  rows.push(["GTGT", "", "", `Thuế GTGT (${cfg.vatRate}%)`, "", "", "", "", "", "", "", tot.GTGT]);
+  rows.push(["GXDST", "", "", "CHI PHÍ XÂY DỰNG SAU THUẾ", "", "", "", "", "", "", "", tot.GXDST]);
+
+  // Convert to TSV then use data URI
+  const tsv = rows.map((r) => r.join("\t")).join("\n");
+  const blob = new Blob(["\ufeff" + tsv], { type: "text/tab-separated-values;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  const fn = `DuToan_${cfg.tenHangMuc.replace(/[^a-zA-Z0-9]/g, "_")}.xls`;
+  a.download = fn;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
-function DinhMucPanel({ dinhMuc, onAdd, onDelete }) {
-  const [form, setForm] = useState({ mhDm: "", ten: "", dvt: "", vlDm: 0, ncDm: 0, mtcDm: 0 });
-  return (
-    <div style={{ padding: 20 }}>
-      <h3 style={{ color: "#1a365d", marginTop: 0, marginBottom: 16, fontSize: 16 }}>📚 Thư Viện Định Mức</h3>
-      <div style={{ background: "#f7fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: 16, marginBottom: 20 }}>
-        <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 12, color: "#2d3748" }}>Thêm định mức mới (TT11/2021)</div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
-          {[
-            { label: "Mã hiệu ĐM", key: "mhDm" },
-            { label: "Tên công tác", key: "ten" },
-            { label: "ĐVT", key: "dvt" },
-          ].map(f => (
-            <div key={f.key}>
-              <label style={{ display: "block", fontSize: 11, color: "#4a5568", marginBottom: 3 }}>{f.label}</label>
-              <input
-                value={form[f.key]}
-                onChange={e => setForm({ ...form, [f.key]: e.target.value })}
-                style={{ width: "100%", padding: "5px 8px", border: "1px solid #cbd5e0", borderRadius: 5, fontSize: 12, boxSizing: "border-box" }}
-              />
-            </div>
-          ))}
-          {[
-            { label: "ĐM Vật liệu", key: "vlDm" },
-            { label: "ĐM Nhân công", key: "ncDm" },
-            { label: "ĐM Máy TC", key: "mtcDm" },
-          ].map(f => (
-            <div key={f.key}>
-              <label style={{ display: "block", fontSize: 11, color: "#4a5568", marginBottom: 3 }}>{f.label}</label>
-              <input
-                type="number"
-                value={form[f.key]}
-                onChange={e => setForm({ ...form, [f.key]: parseFloat(e.target.value) || 0 })}
-                style={{ width: "100%", padding: "5px 8px", border: "1px solid #cbd5e0", borderRadius: 5, fontSize: 12, boxSizing: "border-box", textAlign: "right" }}
-              />
-            </div>
-          ))}
-        </div>
-        <button
-          onClick={() => { if (form.mhDm && form.ten) { onAdd({ ...form, id: genId() }); setForm({ mhDm: "", ten: "", dvt: "", vlDm: 0, ncDm: 0, mtcDm: 0 }); } }}
-          style={{ marginTop: 12, padding: "7px 16px", background: "#2b6cb0", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13 }}
-        >
-          Thêm định mức
-        </button>
-      </div>
-      <table style={{ borderCollapse: "collapse", fontSize: 12, width: "100%" }}>
-        <thead>
-          <tr style={{ background: "#2b6cb0", color: "#fff" }}>
-            {["Mã hiệu", "Tên công tác", "ĐVT", "ĐM Vật liệu", "ĐM Nhân công", "ĐM Máy TC", ""].map(h => (
-              <th key={h} style={{ padding: "7px 10px", textAlign: h.includes("ĐM") ? "right" : "left" }}>{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {dinhMuc.length === 0 && (
-            <tr><td colSpan={7} style={{ textAlign: "center", padding: 24, color: "#a0aec0" }}>Chưa có định mức nào</td></tr>
-          )}
-          {dinhMuc.map((dm, i) => (
-            <tr key={dm.id} style={{ background: i % 2 === 0 ? "#fff" : "#f7fafc" }}>
-              <td style={{ padding: "6px 10px", fontFamily: "monospace", color: "#4a5568" }}>{dm.mhDm}</td>
-              <td style={{ padding: "6px 10px" }}>{dm.ten}</td>
-              <td style={{ padding: "6px 10px", textAlign: "center" }}>{dm.dvt}</td>
-              <td style={{ padding: "6px 10px", textAlign: "right" }}>{dm.vlDm}</td>
-              <td style={{ padding: "6px 10px", textAlign: "right" }}>{dm.ncDm}</td>
-              <td style={{ padding: "6px 10px", textAlign: "right" }}>{dm.mtcDm}</td>
-              <td style={{ padding: "6px 10px", textAlign: "center" }}>
-                <button onClick={() => onDelete(dm.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#fc8181" }}>✕</button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function ExportPanel({ project, items, coef }) {
-  const handleExport = async () => {
-    const totals = items.filter(i => !i.isGroup).reduce(
-      (acc, item) => {
-        acc.vl += (item.kl || 0) * (item.dgVl || 0);
-        acc.nc += (item.kl || 0) * (item.dgNc || 0);
-        acc.mtc += (item.kl || 0) * (item.dgMtc || 0);
-        return acc;
-      }, { vl: 0, nc: 0, mtc: 0 }
-    );
-    const VL = totals.vl * coef.hsvl;
-    const NC = totals.nc * coef.hsnc;
-    const MTC = totals.mtc * coef.hsmtc;
-    const T = VL + NC + MTC;
-    const C = T * (coef.hscpc / 100);
-    const LT = T * (coef.hsnt / 100);
-    const Z = T + C + LT;
-    const TL = Z * (coef.hstncttt / 100);
-    const G = Z + TL;
-    const GTGT = G * (coef.hsvat / 100);
-    const GXDST = G + GTGT;
-
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+// ─── AI Parser via Anthropic API ─────────────────────────────────────────────
+async function parseVatTuWithAI(text, setStatus) {
+  setStatus("Đang gọi AI phân tích...");
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "claude-sonnet-4-20250514",
         max_tokens: 1000,
-        messages: [{
-          role: "user",
-          content: `Tạo thuyết minh ngắn gọn (3-4 câu) cho dự toán xây dựng sau (tiếng Việt):
-Công trình: ${project.tenCongTrinh || "---"}
-Hạng mục: ${project.hangMuc || "---"}
-Chi phí xây dựng trước thuế: ${fmt(G)} đồng
-Thuế GTGT ${coef.hsvat}%: ${fmt(GTGT)} đồng
-Tổng cộng sau thuế: ${fmt(GXDST)} đồng
-Chi phí chung: ${coef.hscpc}%, TNCTTT: ${coef.hstncttt}%
-Số công việc: ${items.filter(i => !i.isGroup).length}
-Nêu cơ sở pháp lý (TT11/12/13-2021/TT-BXD) và kết luận.`
-        }]
-      })
+        messages: [
+          {
+            role: "user",
+            content: `Bạn là chuyên gia dự toán xây dựng Việt Nam. Phân tích danh mục công việc sau và trả về JSON array (không markdown, không giải thích):
+[{"type":"item","name":"tên công việc","dvt":"đơn vị","kl":số,"vl":đơn_giá_vl,"nc":đơn_giá_nc,"mtc":đơn_giá_mtc,"dmCode":"mã_định_mức","dgCode":"mã_đơn_giá"}]
+Nếu là tiêu đề nhóm: {"type":"section","name":"tên nhóm"}
+Điền số 0 nếu không có dữ liệu. Định mức theo TT12/2021/TT-BXD.
+DỮ LIỆU:
+${text.slice(0, 3000)}`,
+          },
+        ],
+      }),
     });
-    const data = await response.json();
-    return data.content?.[0]?.text || "";
-  };
+    const data = await res.json();
+    const raw = data.content?.[0]?.text || "[]";
+    const clean = raw.replace(/```json|```/g, "").trim();
+    const parsed = JSON.parse(clean);
+    setStatus(`✓ AI đọc được ${parsed.filter((x) => x.type === "item").length} công việc`);
+    return parsed.map((x) => ({ ...x, id: uid() }));
+  } catch (e) {
+    setStatus("✗ Lỗi AI: " + e.message);
+    return [];
+  }
+}
 
-  const [note, setNote] = useState("");
-  const [loading, setLoading] = useState(false);
+// ─── Components ──────────────────────────────────────────────────────────────
+
+function TabButton({ active, onClick, children }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        padding: "8px 18px",
+        border: "none",
+        borderBottom: active ? "2px solid #1565c0" : "2px solid transparent",
+        background: "none",
+        cursor: "pointer",
+        fontWeight: active ? 500 : 400,
+        color: active ? "#1565c0" : "var(--color-text-secondary)",
+        fontSize: 14,
+        transition: "all 0.15s",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function SectionRow({ item, onDelete }) {
+  return (
+    <tr style={{ background: "var(--color-background-secondary)" }}>
+      <td colSpan={11} style={{ padding: "6px 8px", fontWeight: 500, fontSize: 13 }}>
+        <span style={{ color: "#1565c0" }}>▶ {item.name}</span>
+      </td>
+      <td style={{ textAlign: "center" }}>
+        <button onClick={onDelete} style={{ background: "none", border: "none", cursor: "pointer", color: "#c62828", fontSize: 16 }}>×</button>
+      </td>
+    </tr>
+  );
+}
+
+function ItemRow({ item, onChange, onDelete }) {
+  const kl = item.kl || 0;
+  const ttVL = (item.vl || 0) * kl;
+  const ttNC = (item.nc || 0) * kl;
+  const ttMTC = (item.mtc || 0) * kl;
+
+  const inp = (field, type = "text") => (
+    <input
+      type={type}
+      value={item[field] ?? ""}
+      onChange={(e) => onChange(item.id, field, type === "number" ? +e.target.value : e.target.value)}
+      style={{
+        width: "100%", border: "none", background: "transparent",
+        fontSize: 12, padding: "2px 4px", textAlign: type === "number" ? "right" : "left",
+        outline: "none", color: "var(--color-text-primary)",
+      }}
+    />
+  );
 
   return (
-    <div style={{ padding: 20 }}>
-      <h3 style={{ color: "#1a365d", marginTop: 0, marginBottom: 16, fontSize: 16 }}>📤 Xuất File & Thuyết Minh</h3>
+    <tr style={{ borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+      <td style={{ textAlign: "center", fontSize: 12, padding: "4px 6px" }}>{item.stt || "-"}</td>
+      <td style={{ padding: "2px 4px", fontSize: 12 }}>{inp("dmCode")}</td>
+      <td style={{ padding: "2px 4px", fontSize: 12 }}>{inp("dgCode")}</td>
+      <td style={{ padding: "2px 4px", fontSize: 12, minWidth: 200 }}>{inp("name")}</td>
+      <td style={{ padding: "2px 4px", fontSize: 12 }}>{inp("dvt")}</td>
+      <td style={{ padding: "2px 4px" }}>{inp("kl", "number")}</td>
+      <td style={{ padding: "2px 4px" }}>{inp("vl", "number")}</td>
+      <td style={{ padding: "2px 4px" }}>{inp("nc", "number")}</td>
+      <td style={{ padding: "2px 4px" }}>{inp("mtc", "number")}</td>
+      <td style={{ padding: "4px 6px", textAlign: "right", fontSize: 12 }}>{fmt(ttVL)}</td>
+      <td style={{ padding: "4px 6px", textAlign: "right", fontSize: 12 }}>{fmt(ttNC)}</td>
+      <td style={{ padding: "4px 6px", textAlign: "right", fontSize: 12 }}>{fmt(ttMTC)}</td>
+      <td style={{ textAlign: "center" }}>
+        <button onClick={onDelete} style={{ background: "none", border: "none", cursor: "pointer", color: "#c62828", fontSize: 16 }}>×</button>
+      </td>
+    </tr>
+  );
+}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        <div style={{ background: "#f7fafc", border: "1px solid #e2e8f0", borderRadius: 10, padding: 20 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "#2d3748", marginBottom: 12 }}>📄 Xuất Excel (G8 format)</div>
-          <p style={{ fontSize: 12, color: "#718096", margin: "0 0 16px" }}>
-            Xuất file Excel với đầy đủ các sheet: Du toan, Gia tri vat tu, THKP, Don gia chi tiet, TM...
-            theo chuẩn G8 / TT11-13/2021/TT-BXD
-          </p>
-          <div style={{ fontSize: 11, color: "#718096", marginBottom: 12 }}>
-            ⚠️ Để xuất Excel đầy đủ, vui lòng dùng tính năng xuất file của hệ thống hoặc copy dữ liệu từ các bảng.
+function DuToanTab({ items, setItems, cfg }) {
+  const [aiText, setAiText] = useState("");
+  const [aiStatus, setAiStatus] = useState("");
+  const [showAI, setShowAI] = useState(false);
+  const fileRef = useRef();
+
+  const addSection = () =>
+    setItems((prev) => [...prev, { id: uid(), type: "section", name: "Nhóm công việc mới" }]);
+
+  const addItem = () =>
+    setItems((prev) => [
+      ...prev,
+      { id: uid(), type: "item", name: "Công việc", dvt: "m2", kl: 0, vl: 0, nc: 0, mtc: 0, dmCode: "", dgCode: "" },
+    ]);
+
+  const onDelete = (id) => setItems((prev) => prev.filter((x) => x.id !== id));
+
+  const onChange = useCallback((id, field, val) => {
+    setItems((prev) => prev.map((x) => (x.id === id ? { ...x, [field]: val } : x)));
+  }, [setItems]);
+
+  const handleFileImport = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => setAiText(ev.target.result);
+    reader.readAsText(file, "utf-8");
+  };
+
+  const runAI = async () => {
+    if (!aiText.trim()) return;
+    const parsed = await parseVatTuWithAI(aiText, setAiStatus);
+    if (parsed.length > 0) {
+      let stt = items.filter((x) => x.type === "item").length;
+      setItems((prev) => [
+        ...prev,
+        ...parsed.map((x) => ({ ...x, stt: x.type === "item" ? ++stt : undefined })),
+      ]);
+    }
+  };
+
+  // Renumber items
+  let sttCount = 0;
+  const numberedItems = items.map((it) =>
+    it.type === "item" ? { ...it, stt: ++sttCount } : it
+  );
+
+  const tot = calcTotals(items, cfg);
+
+  const colStyle = { padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 12, background: "var(--color-background-secondary)" };
+
+  return (
+    <div>
+      {/* Toolbar */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+        <button onClick={addSection} style={{ padding: "6px 12px", fontSize: 12, border: "0.5px solid var(--color-border-secondary)", borderRadius: 6, background: "none", cursor: "pointer" }}>
+          + Nhóm công việc
+        </button>
+        <button onClick={addItem} style={{ padding: "6px 12px", fontSize: 12, border: "0.5px solid var(--color-border-secondary)", borderRadius: 6, background: "none", cursor: "pointer" }}>
+          + Thêm công việc
+        </button>
+        <button onClick={() => setShowAI(!showAI)} style={{ padding: "6px 12px", fontSize: 12, border: "0.5px solid #1565c0", borderRadius: 6, background: showAI ? "#e3f2fd" : "none", cursor: "pointer", color: "#1565c0" }}>
+          🤖 AI đọc vật tư
+        </button>
+        <button onClick={() => exportToXLSX(items, cfg)} style={{ padding: "6px 12px", fontSize: 12, border: "0.5px solid #2e7d32", borderRadius: 6, background: "none", cursor: "pointer", color: "#2e7d32", marginLeft: "auto" }}>
+          ↓ Xuất Excel (.xls)
+        </button>
+      </div>
+
+      {/* AI Panel */}
+      {showAI && (
+        <div style={{ background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: 8, padding: 12, marginBottom: 12 }}>
+          <p style={{ fontSize: 12, color: "var(--color-text-secondary)", margin: "0 0 8px" }}>Dán danh mục vật tư, CSV hoặc tải file text/CSV:</p>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            <input ref={fileRef} type="file" accept=".txt,.csv" onChange={handleFileImport} style={{ display: "none" }} />
+            <button onClick={() => fileRef.current.click()} style={{ padding: "5px 10px", fontSize: 12, border: "0.5px solid var(--color-border-secondary)", borderRadius: 5, background: "none", cursor: "pointer" }}>
+              📁 Tải file
+            </button>
+            <span style={{ fontSize: 12, color: "#1565c0" }}>{aiStatus}</span>
           </div>
-          <button
-            onClick={() => {
-              const csvRows = [
-                ["STT","Mã hiệu ĐG","Nội dung công việc","ĐVT","Khối lượng","ĐG Vật liệu","ĐG Nhân công","ĐG Máy TC","TT Vật liệu","TT Nhân công","TT Máy TC"],
-                ...items.filter(i => !i.isGroup).map((item, idx) => [
-                  idx+1, item.mhDg, item.noiDung, item.dvt, item.kl, item.dgVl, item.dgNc, item.dgMtc,
-                  (item.kl||0)*(item.dgVl||0), (item.kl||0)*(item.dgNc||0), (item.kl||0)*(item.dgMtc||0)
-                ])
-              ];
-              const csv = csvRows.map(r => r.map(c => `"${c||""}"`).join(",")).join("\n");
-              const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement("a");
-              a.href = url; a.download = `DuToan_${project.tenCongTrinh||"CT"}.csv`;
-              a.click(); URL.revokeObjectURL(url);
-            }}
-            style={{ padding: "9px 20px", background: "#38a169", color: "#fff", border: "none", borderRadius: 7, cursor: "pointer", fontSize: 13, fontWeight: 600 }}
-          >
-            📊 Xuất CSV (Excel-compatible)
+          <textarea
+            value={aiText}
+            onChange={(e) => setAiText(e.target.value)}
+            placeholder="VD: SA.32213 - Cắt sàn bê tông - 1m - 46 lần - ĐG NC: 175.026đ ..."
+            style={{ width: "100%", height: 100, fontSize: 12, padding: 8, border: "0.5px solid var(--color-border-tertiary)", borderRadius: 6, resize: "vertical", fontFamily: "monospace", background: "var(--color-background-primary)", color: "var(--color-text-primary)", boxSizing: "border-box" }}
+          />
+          <button onClick={runAI} style={{ marginTop: 8, padding: "6px 16px", fontSize: 12, background: "#1565c0", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }}>
+            Phân tích với AI →
           </button>
         </div>
+      )}
 
-        <div style={{ background: "#f7fafc", border: "1px solid #e2e8f0", borderRadius: 10, padding: 20 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "#2d3748", marginBottom: 12 }}>🤖 Tạo Thuyết Minh AI</div>
-          <p style={{ fontSize: 12, color: "#718096", margin: "0 0 16px" }}>
-            Tự động tạo thuyết minh dự toán theo TT11/12/13-2021/TT-BXD bằng AI
-          </p>
-          <button
-            onClick={async () => {
-              setLoading(true);
-              setNote("Đang tạo thuyết minh...");
-              try {
-                const text = await handleExport();
-                setNote(text);
-              } catch (e) {
-                setNote("Lỗi: " + e.message);
-              }
-              setLoading(false);
-            }}
-            disabled={loading}
-            style={{ padding: "9px 20px", background: "#805ad5", color: "#fff", border: "none", borderRadius: 7, cursor: "pointer", fontSize: 13, fontWeight: 600 }}
-          >
-            {loading ? "⏳ Đang tạo..." : "✨ Tạo thuyết minh"}
-          </button>
-          {note && (
-            <div style={{ marginTop: 14, padding: 12, background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, fontSize: 12, color: "#2d3748", lineHeight: 1.6 }}>
-              {note}
-            </div>
+      {/* Table */}
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, tableLayout: "fixed" }}>
+          <colgroup>
+            <col style={{ width: 36 }} />
+            <col style={{ width: 90 }} />
+            <col style={{ width: 90 }} />
+            <col style={{ width: 220 }} />
+            <col style={{ width: 55 }} />
+            <col style={{ width: 65 }} />
+            <col style={{ width: 85 }} />
+            <col style={{ width: 85 }} />
+            <col style={{ width: 85 }} />
+            <col style={{ width: 100 }} />
+            <col style={{ width: 100 }} />
+            <col style={{ width: 100 }} />
+            <col style={{ width: 36 }} />
+          </colgroup>
+          <thead>
+            <tr style={{ background: "#1565c0", color: "#fff" }}>
+              {["STT", "Định mức", "Mã ĐG", "Nội dung công việc", "ĐVT", "KL",
+                "ĐG VL", "ĐG NC", "ĐG MTC",
+                "TT VL", "TT NC", "TT MTC", ""].map((h, i) => (
+                <th key={i} style={{ padding: "7px 6px", textAlign: i >= 9 ? "right" : "center", fontWeight: 500, fontSize: 11 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {numberedItems.map((item) =>
+              item.type === "section" ? (
+                <SectionRow key={item.id} item={item} onDelete={() => onDelete(item.id)} />
+              ) : (
+                <ItemRow key={item.id} item={item} onChange={onChange} onDelete={() => onDelete(item.id)} />
+              )
+            )}
+            {items.length === 0 && (
+              <tr>
+                <td colSpan={13} style={{ textAlign: "center", padding: 32, color: "var(--color-text-secondary)", fontSize: 13 }}>
+                  Chưa có công việc. Nhấn "+ Thêm công việc" hoặc dùng AI đọc vật tư.
+                </td>
+              </tr>
+            )}
+          </tbody>
+          {items.length > 0 && (
+            <tfoot>
+              <tr style={{ background: "#e3f2fd", fontWeight: 500 }}>
+                <td colSpan={9} style={{ ...colStyle, textAlign: "left" }}>TỔNG CỘNG (A1 + B1 + C1)</td>
+                <td style={colStyle}>{fmt(tot.sumVL)}</td>
+                <td style={colStyle}>{fmt(tot.sumNC)}</td>
+                <td style={colStyle}>{fmt(tot.sumMTC)}</td>
+                <td></td>
+              </tr>
+            </tfoot>
           )}
+        </table>
+      </div>
+
+      {/* THKP Summary */}
+      {items.length > 0 && (
+        <div style={{ marginTop: 20, background: "var(--color-background-secondary)", borderRadius: 8, border: "0.5px solid var(--color-border-tertiary)", overflow: "hidden" }}>
+          <div style={{ background: "#1565c0", color: "#fff", padding: "8px 14px", fontSize: 13, fontWeight: 500 }}>
+            BẢNG TỔNG HỢP KINH PHÍ
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            {[
+              ["T", "CHI PHÍ TRỰC TIẾP (T = VL + NC + MTC)", tot.T, false],
+              ["  VL", `Chi phí Vật liệu`, tot.sumVL, false],
+              ["  NC", `Chi phí Nhân công`, tot.sumNC, false],
+              ["  MTC", `Chi phí Máy thi công`, tot.sumMTC, false],
+              ["C", `Chi phí chung (${cfg.chiPhiChung}% × T)`, tot.C, false],
+              ["LT", `Chi phí nhà tạm (${cfg.nhaTam}% × T)`, tot.LT, false],
+              ["TT", `Chi phí khác không xác định được (${cfg.khacKhongXD}% × T)`, tot.TT_kphi, false],
+              ["GT", "CỘNG CHI PHÍ GIÁN TIẾP (C + LT + TT)", tot.GT, false],
+              ["Z", "GIÁ THÀNH DỰ TOÁN XÂY DỰNG (T + GT)", tot.Z, false],
+              ["TL", `Thu nhập chịu thuế tính trước (${cfg.tnctt}% × Z)`, tot.TL, false],
+              ["G", "CHI PHÍ XÂY DỰNG TRƯỚC THUẾ (Z + TL)", tot.G, true],
+              ["GTGT", `Thuế GTGT (${cfg.vatRate}% × G)`, tot.GTGT, false],
+              ["GXDST", "CHI PHÍ XÂY DỰNG SAU THUẾ (G + GTGT)", tot.GXDST, true],
+            ].map(([key, label, val, bold]) => (
+              <tr key={key} style={{ borderBottom: "0.5px solid var(--color-border-tertiary)", background: bold ? "#e8f5e9" : "transparent" }}>
+                <td style={{ padding: "6px 14px", width: 60, color: "#1565c0", fontWeight: 500, fontFamily: "monospace", fontSize: 12 }}>{key}</td>
+                <td style={{ padding: "6px 8px", fontWeight: bold ? 500 : 400 }}>{label}</td>
+                <td style={{ padding: "6px 14px", textAlign: "right", fontWeight: bold ? 700 : 400, fontSize: bold ? 14 : 13, color: bold ? "#1b5e20" : "var(--color-text-primary)" }}>
+                  {fmt(val)} đ
+                </td>
+              </tr>
+            ))}
+          </table>
+          <div style={{ padding: "8px 14px", fontSize: 12, color: "var(--color-text-secondary)", borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+            <strong>Tổng cộng bằng chữ:</strong> {numberToWords(Math.round(tot.GXDST))} đồng
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConfigTab({ cfg, setCfg }) {
+  const field = (key, label, type = "number", step) => (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <label style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{label}</label>
+      <input
+        type={type}
+        step={step}
+        value={cfg[key]}
+        onChange={(e) => setCfg((p) => ({ ...p, [key]: type === "number" ? +e.target.value : e.target.value }))}
+        style={{ padding: "6px 10px", fontSize: 13, border: "0.5px solid var(--color-border-secondary)", borderRadius: 6, background: "var(--color-background-primary)", color: "var(--color-text-primary)" }}
+      />
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{ background: "var(--color-background-secondary)", borderRadius: 8, border: "0.5px solid var(--color-border-tertiary)", padding: 16, marginBottom: 16 }}>
+        <h3 style={{ margin: "0 0 12px", fontSize: 14, fontWeight: 500 }}>Thông tin dự án</h3>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          {field("tenDuAn", "Tên dự án", "text")}
+          {field("tenCongTrinh", "Tên công trình", "text")}
+          {field("tenHangMuc", "Tên hạng mục", "text")}
+          {field("diaDiem", "Địa điểm", "text")}
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <label style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Loại công trình</label>
+            <select value={cfg.loaiCongTrinh} onChange={(e) => setCfg((p) => ({ ...p, loaiCongTrinh: e.target.value }))}
+              style={{ padding: "6px 10px", fontSize: 13, border: "0.5px solid var(--color-border-secondary)", borderRadius: 6, background: "var(--color-background-primary)", color: "var(--color-text-primary)" }}>
+              {Object.entries(LOAI_CT).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <label style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Vùng / Khu vực</label>
+            <select value={cfg.vung} onChange={(e) => setCfg((p) => ({ ...p, vung: e.target.value }))}
+              style={{ padding: "6px 10px", fontSize: 13, border: "0.5px solid var(--color-border-secondary)", borderRadius: 6, background: "var(--color-background-primary)", color: "var(--color-text-primary)" }}>
+              <option value="1">Vùng I (TP. HCM - Khu vực 1)</option>
+              <option value="2">Vùng II (Huyện Cần Giờ)</option>
+            </select>
+          </div>
         </div>
       </div>
 
-      <div style={{ marginTop: 20, padding: 16, background: "#fffaf0", border: "1px solid #fbd38d", borderRadius: 8 }}>
-        <div style={{ fontWeight: 600, fontSize: 13, color: "#744210", marginBottom: 8 }}>📌 Hướng dẫn chia sẻ cho nhiều người dùng</div>
-        <ul style={{ fontSize: 12, color: "#744210", margin: 0, paddingLeft: 20, lineHeight: 1.8 }}>
-          <li>Ứng dụng này chạy hoàn toàn trên trình duyệt, không cần cài đặt</li>
-          <li>Dữ liệu lưu trong tab hiện tại (khi đóng tab sẽ mất)</li>
-          <li>Để chia sẻ: Xuất CSV, gửi file cho đồng nghiệp</li>
-          <li>Để lưu trữ lâu dài: Sử dụng tính năng lưu dữ liệu định mức bên trên</li>
-          <li>3-4 người có thể dùng đồng thời bằng cách mở ứng dụng trong Claude.ai</li>
-        </ul>
+      <div style={{ background: "var(--color-background-secondary)", borderRadius: 8, border: "0.5px solid var(--color-border-tertiary)", padding: 16, marginBottom: 16 }}>
+        <h3 style={{ margin: "0 0 12px", fontSize: 14, fontWeight: 500 }}>Hệ số chi phí (theo TT11/2021/TT-BXD)</h3>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+          {field("chiPhiChung", "Chi phí chung (%)", "number", 0.001)}
+          {field("nhaTam", "Chi phí nhà tạm (%)", "number", 0.1)}
+          {field("khacKhongXD", "Chi phí khác không XĐ (%)", "number", 0.1)}
+          {field("tnctt", "TNCTT (%)", "number", 0.1)}
+          {field("vatRate", "Thuế GTGT (%)", "number", 1)}
+          {field("hsVL", "Hệ số VL", "number", 0.01)}
+          {field("hsNC", "Hệ số NC", "number", 0.01)}
+          {field("hsMTC", "Hệ số MTC", "number", 0.01)}
+        </div>
+      </div>
+
+      <div style={{ background: "#fff8e1", borderRadius: 8, border: "0.5px solid #ffe082", padding: 12 }}>
+        <pre style={{ fontSize: 11, margin: 0, color: "#5d4037", fontFamily: "monospace", whiteSpace: "pre-wrap" }}>{FORMULA_HELP}</pre>
       </div>
     </div>
   );
 }
 
-// ============ MAIN APP ============
-export default function DuToanApp() {
-  const [activeTab, setActiveTab] = useState("info");
-  const [project, setProject] = useState({
-    tenDuAn: "Cải tạo công nghệ cầu xuất",
-    tenCongTrinh: "Cải tạo công nghệ cầu xuất",
-    hangMuc: "Cải tạo công nghệ cầu xuất xuống thùng xe bồn",
-    diaDiem: "Kho xăng dầu Tây Nam Bộ",
-    chuDauTu: "",
-    donViLap: "",
-  });
-  const [coef, setCoef] = useState({ ...DEFAULT_COEFFICIENTS });
-  const [items, setItems] = useState([
-    { id: genId(), isGroup: true, noiDung: "HẠ CẦN XUẤT XUỐNG THÙNG XE BỒN", mhDg: "" },
-    { id: genId(), mhDg: "BB.31010", noiDung: "Tháo dỡ ống thép 4\"", dvt: "100m", kl: 0.4, dgVl: 14414948, dgNc: 7681938, dgMtc: 298842 },
-    { id: genId(), mhDg: "BB.86104", noiDung: "Tháo dỡ van 4\" hiện trạng", dvt: "cái", kl: 6, dgVl: 4839212, dgNc: 141818, dgMtc: 0 },
-    { id: genId(), mhDg: "BB.87104", noiDung: "Tháo dỡ bích 4\" hiện trạng", dvt: "cặp bích", kl: 18, dgVl: 537422, dgNc: 97984, dgMtc: 35389 },
-    { id: genId(), mhDg: "BB.85102", noiDung: "Tháo dỡ công tơ 4\" hiện trạng", dvt: "cái", kl: 3, dgVl: 7796260, dgNc: 198546, dgMtc: 0 },
-    { id: genId(), mhDg: "AK.83520", noiDung: "Sơn ống công nghệ 4\"", dvt: "m2", kl: 14.318, dgVl: 31946, dgNc: 20468, dgMtc: 0 },
-    { id: genId(), mhDg: "AI.11132", noiDung: "Gia công gối đỡ bằng thép hình", dvt: "tấn", kl: 0.2, dgVl: 22128552, dgNc: 3498187, dgMtc: 3111579 },
-  ]);
-  const [dinhMuc, setDinhMuc] = useState([]);
+function NormTab() {
+  const [norms, setNorms] = useState([]);
+  const [status, setStatus] = useState("");
+  const fileRef = useRef();
 
-  const addItem = (isGroup = false) => {
-    setItems([...items, { id: genId(), isGroup: !!isGroup, mhDg: "", noiDung: isGroup ? "NHÓM MỚI" : "", dvt: "", kl: 0, dgVl: 0, dgNc: 0, dgMtc: 0 }]);
+  const handleFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setStatus("Đang đọc file...");
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const text = ev.target.result;
+      setStatus("Đang phân tích định mức với AI...");
+      try {
+        const res = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 1000,
+            messages: [{
+              role: "user",
+              content: `Trích xuất bảng định mức xây dựng từ văn bản sau. Trả về JSON array (không markdown):
+[{"ma":"mã_định_mức","ten":"tên_công_tác","dvt":"đơn_vị","vl":số,"nc":số,"mtc":số,"ghiChu":""}]
+VĂN BẢN: ${text.slice(0, 4000)}`,
+            }],
+          }),
+        });
+        const data = await res.json();
+        const raw = data.content?.[0]?.text || "[]";
+        const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
+        setNorms((p) => [...p, ...parsed.map((x) => ({ ...x, id: uid() }))]);
+        setStatus(`✓ Đã nhập ${parsed.length} định mức`);
+      } catch (err) {
+        setStatus("✗ Lỗi: " + err.message);
+      }
+    };
+    reader.readAsText(file, "utf-8");
   };
-  const updateItem = (id, changes) => setItems(items.map((i) => (i.id === id ? { ...i, ...changes } : i)));
-  const deleteItem = (id) => setItems(items.filter((i) => i.id !== id));
-
-  const tabs = [
-    { id: "info", label: "📋 Thông tin" },
-    { id: "coef", label: "⚙️ Hệ số" },
-    { id: "dutoan", label: "📊 Bảng dự toán" },
-    { id: "thkp", label: "💰 Tổng hợp KP" },
-    { id: "vattu", label: "🔩 Giá trị vật tư" },
-    { id: "dinhmuc", label: "📚 Định mức" },
-    { id: "export", label: "📤 Xuất file" },
-  ];
-
-  // Quick summary bar
-  const totals = items.filter(i => !i.isGroup).reduce(
-    (acc, item) => { acc.vl += (item.kl||0)*(item.dgVl||0); acc.nc += (item.kl||0)*(item.dgNc||0); acc.mtc += (item.kl||0)*(item.dgMtc||0); return acc; },
-    { vl: 0, nc: 0, mtc: 0 }
-  );
-  const T = (totals.vl * coef.hsvl) + (totals.nc * coef.hsnc) + (totals.mtc * coef.hsmtc);
-  const G = T * (1 + coef.hscpc/100 + coef.hsnt/100) * (1 + coef.hstncttt/100);
-  const GXDST = G * (1 + coef.hsvat/100);
 
   return (
-    <div style={{ fontFamily: "'Segoe UI', 'Arial', sans-serif", minHeight: "100vh", background: "#edf2f7" }}>
-      {/* Header */}
-      <div style={{ background: "linear-gradient(135deg, #1a365d 0%, #2b6cb0 100%)", padding: "14px 24px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div>
-          <div style={{ color: "#fff", fontWeight: 800, fontSize: 18, letterSpacing: 0.5 }}>
-            🏗️ Phần Mềm Dự Toán Xây Dựng
-          </div>
-          <div style={{ color: "#90cdf4", fontSize: 11, marginTop: 2 }}>
-            Theo TT11/12/13-2021/TT-BXD · {project.tenCongTrinh || "---"}
-          </div>
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center" }}>
+        <input ref={fileRef} type="file" accept=".txt,.csv,.doc,.docx" onChange={handleFile} style={{ display: "none" }} />
+        <button onClick={() => fileRef.current.click()} style={{ padding: "7px 14px", fontSize: 12, border: "0.5px solid #1565c0", borderRadius: 6, background: "none", cursor: "pointer", color: "#1565c0" }}>
+          📂 Import định mức (TXT/CSV)
+        </button>
+        <button onClick={() => setNorms([])} style={{ padding: "7px 14px", fontSize: 12, border: "0.5px solid var(--color-border-secondary)", borderRadius: 6, background: "none", cursor: "pointer" }}>
+          Xóa tất cả
+        </button>
+        <span style={{ fontSize: 12, color: "#1565c0" }}>{status}</span>
+        <span style={{ fontSize: 12, color: "var(--color-text-secondary)", marginLeft: "auto" }}>
+          {norms.length} định mức đã nhập
+        </span>
+      </div>
+
+      <div style={{ background: "#e3f2fd", borderRadius: 6, padding: "8px 12px", marginBottom: 12, fontSize: 12, color: "#1565c0" }}>
+        💡 Import file định mức từ: QĐ 1491/QĐ-SXD-KT&VLXD TP.HCM 2024, TT12/2021/TT-BXD, hoặc quyết định của từng tỉnh.
+        AI sẽ tự động đọc và lưu vào cơ sở dữ liệu.
+      </div>
+
+      {norms.length === 0 ? (
+        <div style={{ textAlign: "center", padding: 40, color: "var(--color-text-secondary)", fontSize: 13, border: "0.5px dashed var(--color-border-tertiary)", borderRadius: 8 }}>
+          Chưa có định mức. Import file quyết định định mức địa phương.
         </div>
-        <div style={{ display: "flex", gap: 16 }}>
-          {[
-            { label: "Chi phí TC", val: fmt(T) },
-            { label: "Trước thuế", val: fmt(G) },
-            { label: "Sau thuế (GXDST)", val: fmt(GXDST), highlight: true },
-          ].map(s => (
-            <div key={s.label} style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 10, color: "#90cdf4" }}>{s.label}</div>
-              <div style={{ fontSize: s.highlight ? 16 : 13, fontWeight: 700, color: s.highlight ? "#ffd700" : "#fff" }}>
-                {s.val} đ
-              </div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: "#1565c0", color: "#fff" }}>
+                {["Mã định mức", "Tên công tác", "ĐVT", "VL", "NC", "MTC", "Ghi chú"].map((h) => (
+                  <th key={h} style={{ padding: "7px 8px", textAlign: "left", fontWeight: 500, fontSize: 11 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {norms.map((n, i) => (
+                <tr key={n.id} style={{ background: i % 2 ? "var(--color-background-secondary)" : "transparent", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+                  <td style={{ padding: "5px 8px", fontFamily: "monospace", color: "#1565c0" }}>{n.ma}</td>
+                  <td style={{ padding: "5px 8px" }}>{n.ten}</td>
+                  <td style={{ padding: "5px 8px" }}>{n.dvt}</td>
+                  <td style={{ padding: "5px 8px", textAlign: "right" }}>{fmt(n.vl)}</td>
+                  <td style={{ padding: "5px 8px", textAlign: "right" }}>{fmt(n.nc)}</td>
+                  <td style={{ padding: "5px 8px", textAlign: "right" }}>{fmt(n.mtc)}</td>
+                  <td style={{ padding: "5px 8px", color: "var(--color-text-secondary)" }}>{n.ghiChu}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Number to words (Vietnamese) ────────────────────────────────────────────
+function numberToWords(n) {
+  if (!n || n === 0) return "không";
+  if (n >= 1e12) return fmt(n / 1e9, 0) + " tỷ";
+  const b = Math.floor(n / 1e9);
+  const m = Math.floor((n % 1e9) / 1e6);
+  const k = Math.floor((n % 1e6) / 1e3);
+  const r = n % 1e3;
+  let s = "";
+  if (b) s += b + " tỷ ";
+  if (m) s += m + " triệu ";
+  if (k) s += k + " nghìn ";
+  if (r) s += r + " ";
+  return s.trim();
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+export default function DuToanG8Pro() {
+  const [tab, setTab] = useState("dutoan");
+  const [cfg, setCfg] = useState(DEFAULT_CONFIG);
+  const [items, setItems] = useState([]);
+
+  const tot = calcTotals(items, cfg);
+
+  return (
+    <div style={{ fontFamily: "'Be Vietnam Pro', sans-serif", maxWidth: 1100, margin: "0 auto", padding: "0 0 40px" }}>
+      <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;700&display=swap" rel="stylesheet" />
+
+      {/* Header */}
+      <div style={{ background: "linear-gradient(135deg, #0d47a1 0%, #1565c0 100%)", color: "#fff", padding: "16px 20px", borderRadius: "0 0 12px 12px", marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+          <div>
+            <h1 style={{ margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: "-0.3px" }}>
+              🏗 Phần mềm Dự toán Xây dựng G8
+            </h1>
+            <p style={{ margin: "2px 0 0", fontSize: 12, opacity: 0.8 }}>
+              Theo TT11/12/13-2021/TT-BXD • {cfg.tenHangMuc}
+            </p>
+          </div>
+          {items.length > 0 && (
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 11, opacity: 0.8 }}>Tổng sau thuế</div>
+              <div style={{ fontSize: 20, fontWeight: 700 }}>{fmt(tot.GXDST)} đ</div>
             </div>
-          ))}
+          )}
         </div>
       </div>
 
-      {/* Tabs */}
-      <TabBar tabs={tabs} active={activeTab} onSelect={setActiveTab} />
+      {/* Summary Cards */}
+      {items.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 16 }}>
+          {[
+            { label: "Chi phí trực tiếp", val: tot.T, color: "#1565c0" },
+            { label: "Chi phí gián tiếp", val: tot.GT, color: "#6a1b9a" },
+            { label: "Trước thuế", val: tot.G, color: "#2e7d32" },
+            { label: "Sau thuế (GTGT)", val: tot.GXDST, color: "#c62828" },
+          ].map((c) => (
+            <div key={c.label} style={{ background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: 8, padding: "10px 14px", borderTop: `3px solid ${c.color}` }}>
+              <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{c.label}</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: c.color, marginTop: 2 }}>{fmt(c.val)} đ</div>
+            </div>
+          ))}
+        </div>
+      )}
 
-      {/* Content */}
-      <div style={{ background: "#fff", minHeight: "calc(100vh - 130px)" }}>
-        {activeTab === "info" && <InfoPanel project={project} onChange={setProject} />}
-        {activeTab === "coef" && <CoefficientPanel coef={coef} onChange={setCoef} />}
-        {activeTab === "dutoan" && (
-          <DuToanTable items={items} onAdd={addItem} onUpdate={updateItem} onDelete={deleteItem} coef={coef} />
-        )}
-        {activeTab === "thkp" && <THKP items={items} coef={coef} project={project} />}
-        {activeTab === "vattu" && <GiaTriVatTu items={items} />}
-        {activeTab === "dinhmuc" && (
-          <DinhMucPanel
-            dinhMuc={dinhMuc}
-            onAdd={(dm) => setDinhMuc([...dinhMuc, dm])}
-            onDelete={(id) => setDinhMuc(dinhMuc.filter(d => d.id !== id))}
-          />
-        )}
-        {activeTab === "export" && <ExportPanel project={project} items={items} coef={coef} />}
+      {/* Tabs */}
+      <div style={{ borderBottom: "0.5px solid var(--color-border-tertiary)", marginBottom: 16, display: "flex", gap: 4 }}>
+        <TabButton active={tab === "dutoan"} onClick={() => setTab("dutoan")}>📋 Bảng dự toán</TabButton>
+        <TabButton active={tab === "config"} onClick={() => setTab("config")}>⚙️ Cấu hình</TabButton>
+        <TabButton active={tab === "norm"} onClick={() => setTab("norm")}>📚 Cơ sở định mức</TabButton>
+      </div>
+
+      {/* Tab Content */}
+      <div style={{ padding: "0 2px" }}>
+        {tab === "dutoan" && <DuToanTab items={items} setItems={setItems} cfg={cfg} />}
+        {tab === "config" && <ConfigTab cfg={cfg} setCfg={setCfg} />}
+        {tab === "norm" && <NormTab />}
       </div>
     </div>
   );
